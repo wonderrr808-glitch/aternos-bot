@@ -330,7 +330,7 @@ async startAndMonitor(page, notify) {
     while (Date.now() < deadline) {
       this.throwIfCancelled();
       const { raw, state } = await this.getStatus(page);
-      if (Date.now() - lastTick > 30_000) {
+      if (Date.now() - lastTick > 60_000) {
         lastTick = Date.now();
         log.info(`monitor: status="${raw}" (${state}) [mem ${memInfo()}]`);
       }
