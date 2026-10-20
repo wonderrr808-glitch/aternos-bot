@@ -260,7 +260,7 @@ class AternosController {
     }
   }
 
-async startAndMonitor(page, notify) {
+  async startAndMonitor(page, notify) {
     let { raw, state } = await this.getStatus(page);
     log.info(`Initial status: "${raw}" (${state})`);
 
@@ -271,22 +271,11 @@ async startAndMonitor(page, notify) {
 
     if (state === 'offline' || state === 'unknown') {
       await notify('🖱️ Clicking Start...');
-      
-      // Let the cloud page settle briefly before interacting to avoid triggering Cloudflare blocks
-      await sleep(1500);
-
       await step('Click Start', async () => {
         await page.waitForSelector(SEL.startButton, { visible: true, timeout: config.limits.elementTimeoutMs });
         await humanDelay(600, 1400);
         await page.hover(SEL.startButton).catch(() => {});
-        
-        // Wrap the click in a try/catch so a target closure doesn't crash the script
-        try {
-          await page.click(SEL.startButton);
-        } catch (error) {
-          throw new AternosError(`Failed to click start (Target closed / Cloudflare block): ${error.message}`);
-        }
-
+        await page.click(SEL.startButton);
         await sleep(2000);
         const clicked = await this.handleDialogs(page);
         if (clicked.length) log.info('Dialog buttons clicked:', clicked.join(', '));
@@ -330,7 +319,7 @@ async startAndMonitor(page, notify) {
     while (Date.now() < deadline) {
       this.throwIfCancelled();
       const { raw, state } = await this.getStatus(page);
-      if (Date.now() - lastTick > 60_000) {
+      if (Date.now() - lastTick > 30_000) {
         lastTick = Date.now();
         log.info(`monitor: status="${raw}" (${state}) [mem ${memInfo()}]`);
       }
@@ -351,6 +340,7 @@ async startAndMonitor(page, notify) {
     await notify('⌛ Stopped waiting (timeout). The server may still be starting — check Aternos.');
     return { state: 'timeout' };
   }
+
   // ---------- overlays ----------
 
   async dismissOverlays(page) {
