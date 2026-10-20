@@ -260,7 +260,7 @@ class AternosController {
     }
   }
 
-  async startAndMonitor(page, notify) {
+async startAndMonitor(page, notify) {
     let { raw, state } = await this.getStatus(page);
     log.info(`Initial status: "${raw}" (${state})`);
 
@@ -271,11 +271,22 @@ class AternosController {
 
     if (state === 'offline' || state === 'unknown') {
       await notify('🖱️ Clicking Start...');
+      
+      // Let the cloud page settle briefly before interacting to avoid triggering Cloudflare blocks
+      await sleep(3000);
+
       await step('Click Start', async () => {
         await page.waitForSelector(SEL.startButton, { visible: true, timeout: config.limits.elementTimeoutMs });
         await humanDelay(600, 1400);
         await page.hover(SEL.startButton).catch(() => {});
-        await page.click(SEL.startButton);
+        
+        // Wrap the click in a try/catch so a target closure doesn't crash the script
+        try {
+          await page.click(SEL.startButton);
+        } catch (error) {
+          throw new AternosError(`Failed to click start (Target closed / Cloudflare block): ${error.message}`);
+        }
+
         await sleep(2000);
         const clicked = await this.handleDialogs(page);
         if (clicked.length) log.info('Dialog buttons clicked:', clicked.join(', '));
@@ -340,7 +351,6 @@ class AternosController {
     await notify('⌛ Stopped waiting (timeout). The server may still be starting — check Aternos.');
     return { state: 'timeout' };
   }
-
   // ---------- overlays ----------
 
   async dismissOverlays(page) {
