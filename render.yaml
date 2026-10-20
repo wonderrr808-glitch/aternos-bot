@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: aternos-discord-bot
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: ATERNOS_USERNAME
+        sync: false
+      - key: ATERNOS_PASSWORD
+        sync: false
+      - key: ATERNOS_SERVER_ID
+        sync: false
+      - key: ALLOWED_CHANNEL_ID
+        sync: false
+      - key: HEADLESS
+        value: "true"

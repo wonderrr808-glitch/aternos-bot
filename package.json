@@ -1,0 +1,21 @@
+{
+  "name": "aternos-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that starts an Aternos Minecraft server via stealth headless Chromium",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "HEADLESS=false node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "puppeteer-core": "^22.15.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
