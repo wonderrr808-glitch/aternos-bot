@@ -523,5 +523,5 @@ async closeAds(page) {
     }
     return clicked;
   }
-  
+}
 module.exports = { AternosController };
