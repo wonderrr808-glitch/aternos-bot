@@ -406,16 +406,14 @@ class AternosController {
    *  - the button must stay visible at the same spot for `adCloseSettleMs` before it is clicked
    *  - never clicks links that navigate away, and never touches Aternos' own ad popup
    */
-  async closeAds(page) {
+async closeAds(page) {
     try {
       if (!this.lastAdStartClick) return null;
       const sinceAd = Date.now() - this.lastAdStartClick;
       if (sinceAd < config.limits.adMinWatchMs) return null;
 
-      const aternosPopup = await page
-        .evaluate(() => /watch this short advertisement/i.test(document.body?.innerText || ''))
-        .catch(() => false);
-      if (aternosPopup) return null;
+      // REMOVED: Do not return null on "watch this short advertisement" text.
+      // We must actively search for close elements while this text is visible.
 
       const mainFrame = page.mainFrame();
       const frames = sinceAd >= config.limits.adIframeFallbackMs ? page.frames() : [mainFrame];
@@ -429,7 +427,6 @@ class AternosController {
               const st = getComputedStyle(el);
               return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
             };
-            // effective opacity (a button that is still fading in / dimmed during a countdown is "not ready")
             const ready = (el) => {
               if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
               let op = 1;
@@ -438,7 +435,7 @@ class AternosController {
                 op *= parseFloat(st.opacity || '1');
                 if (n === el && st.pointerEvents === 'none') return false;
               }
-              return op >= 0.9;
+              return op >= 0.8; // Lowered slightly from 0.9 to catch fading ad close buttons
             };
             const safe = (el) => {
               if (el.tagName !== 'A') return true;
@@ -446,53 +443,60 @@ class AternosController {
               return !h || h.startsWith('#') || /^javascript:/i.test(h);
             };
             const ok = (el) => visible(el) && ready(el) && safe(el);
+
             for (const sel of selectors) {
               const el = document.querySelector(sel);
               if (el && ok(el)) return el;
             }
             for (const el of document.querySelectorAll('button, a, div, span, [role="button"]')) {
-              if (el.children.length > 1) continue; // skip containers
+              if (el.children.length > 1) continue;
               const t = (el.textContent || '').trim().toLowerCase();
               if (words.includes(t) && ok(el)) return el;
             }
             return null;
           }, AD_CLOSE_SELECTORS, AD_CLOSE_TEXTS);
         } catch {
-          continue; // frame detached / not ready
+          continue; // Detached frame or cross-origin access restriction
         }
 
         const el = handle.asElement();
-        if (!el) { await handle.dispose(); continue; }
+        if (!el) { 
+          await handle.dispose(); 
+          continue; 
+        }
 
         const info = await el.evaluate((e) => {
           const r = e.getBoundingClientRect();
           const label = (e.textContent || e.getAttribute('aria-label') || 'close').trim().slice(0, 30);
           return { label, pos: `${Math.round(r.x / 4)}x${Math.round(r.y / 4)}` };
         });
+
         const where = frame === mainFrame ? 'page' : 'iframe';
         const key = `${where}|${info.label}|${info.pos}`;
         const now = Date.now();
 
-        // First sighting (or it moved / changed): start the patience timer, don't click yet.
+        // Lock button sighting without letting transient misses wipe out the patience counter
         if (!this.closeSeen || this.closeSeen.key !== key) {
           this.closeSeen = { key, since: now };
-          log.info(`"${info.label}" button appeared (${where}), waiting ${config.limits.adCloseSettleMs}ms to be sure it's ready`);
+          log.info(`"${info.label}" button detected (${where}), waiting settle period...`);
           return null;
         }
+
         if (now - this.closeSeen.since < config.limits.adCloseSettleMs) return null;
 
-        await humanDelay(300, 800);
+        await humanDelay(200, 500);
         try {
           await el.click();
         } catch {
-          await el.evaluate((e) => e.click()); // fallback when not clickable by mouse
+          await el.evaluate((e) => e.click()); // DOM fallback click if coordinate click is blocked
         }
+
         log.info(`Closed ad overlay via "${info.label}" (${where}) after ${Math.round(sinceAd / 1000)}s`);
         this.closeSeen = null;
         return `ad-close:${info.label}`;
       }
 
-      this.closeSeen = null; // nothing ready right now -> reset patience timer
+      // Do NOT reset this.closeSeen = null immediately here; allow polling ticks to maintain tracking state.
     } catch (e) {
       log.debug('closeAds:', e.message);
     }
@@ -503,19 +507,21 @@ class AternosController {
   async handleDialogs(page) {
     const clicked = [];
     try {
-      const d = await clickByText(page, DISMISS_TEXTS, SEL.dialogScope);
+      const d = await clickByText(page, DISMISS_TEXTS, SEL.dialogScope).catch(() => null);
       if (d) clicked.push(d);
-      const a = await clickByText(page, ACCEPT_TEXTS, SEL.dialogScope);
+      
+      const a = await clickByText(page, ACCEPT_TEXTS, SEL.dialogScope).catch(() => null);
       if (a) clicked.push(a);
-      const ad = await this.clickAdStart(page);
+      
+      const ad = await this.clickAdStart(page).catch(() => null);
       if (ad) clicked.push(ad);
-      const closed = await this.closeAds(page);
+      
+      const closed = await this.closeAds(page).catch(() => null);
       if (closed) clicked.push(closed);
     } catch (e) {
       log.debug('handleDialogs:', e.message);
     }
     return clicked;
   }
-}
-
+  
 module.exports = { AternosController };
