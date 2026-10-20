@@ -273,7 +273,7 @@ async startAndMonitor(page, notify) {
       await notify('🖱️ Clicking Start...');
       
       // Let the cloud page settle briefly before interacting to avoid triggering Cloudflare blocks
-      await sleep(3000);
+      await sleep(1500);
 
       await step('Click Start', async () => {
         await page.waitForSelector(SEL.startButton, { visible: true, timeout: config.limits.elementTimeoutMs });
