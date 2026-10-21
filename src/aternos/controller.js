@@ -372,34 +372,67 @@ class AternosController {
     }
 
     if (state === 'offline' || state === 'unknown') {
-      await notify('🖱️ Clicking Start...');
-      await step('Click Start', async () => {
-        await this.trimAds(page); // free RAM before the heavy ad stage
-        await page.waitForSelector(SEL.startButton, { visible: true, timeout: config.limits.elementTimeoutMs });
-        await humanDelay(600, 1400);
-        await page.hover(SEL.startButton).catch(() => {});
-        await page.click(SEL.startButton);
-        await sleep(2000);
-        const clicked = await this.handleDialogs(page);
-        if (clicked.length) log.info('Dialog buttons clicked:', clicked.join(', '));
-      });
+      const attempts = config.limits.startAttempts;
+      let changed = null;
 
-      // Wait for the status to leave "offline"
-      const changed = await step('Verify status changed', async () => {
-        const until = Date.now() + config.limits.startVerifyTimeoutMs; // ad modal + ad playback can take a while
-        while (Date.now() < until) {
-          this.throwIfCancelled();
-          const s = await this.getStatus(page);
-          if (s.state !== 'offline' && s.state !== 'unknown') return s;
-          await this.handleDialogs(page);
-          await sleep(1500);
+      // The Start ad sometimes never renders (no Close button, status stays "Offline").
+      // A reload serves a different ad, so retry a few times before giving up.
+      for (let attempt = 1; attempt <= attempts && !changed; attempt++) {
+        if (attempt === 1) {
+          await notify('🖱️ Clicking Start...');
+        } else {
+          await notify(`🔁 The ad didn't finish (attempt ${attempt - 1}/${attempts}). Reloading and pressing Start again...`);
+          const s = await this.reopenForRetry(page, notify);
+          if (s.state !== 'offline' && s.state !== 'unknown') { changed = s; break; } // it started in the meantime
         }
-        throw new AternosError('Clicked Start but the status never left "Offline" within the allowed time (ad failed to load/play, a popup is blocking, or a selector changed).');
-      });
+
+        await step('Click Start', async () => {
+          await this.trimAds(page); // no-op unless TRIM_ADS=true
+          await page.waitForSelector(SEL.startButton, { visible: true, timeout: config.limits.elementTimeoutMs });
+          await humanDelay(600, 1400);
+          await page.hover(SEL.startButton).catch(() => {});
+          await page.click(SEL.startButton);
+          await sleep(2000);
+          const clicked = await this.handleDialogs(page);
+          if (clicked.length) log.info('Dialog buttons clicked:', clicked.join(', '));
+        });
+
+        try {
+          // Wait for the status to leave "offline"
+          changed = await step('Verify status changed', async () => {
+            const until = Date.now() + config.limits.startAttemptMs;
+            while (Date.now() < until) {
+              this.throwIfCancelled();
+              const s = await this.getStatus(page);
+              if (s.state !== 'offline' && s.state !== 'unknown') return s;
+              await this.handleDialogs(page);
+              await sleep(1500);
+            }
+            throw new AternosError('Clicked Start but the status never left "Offline" (the ad did not finish, a popup is blocking, or a selector changed).');
+          });
+        } catch (err) {
+          if (err.cancelled || this.cancelled || this.stallInfo || attempt >= attempts) throw err; // out of retries / stopped
+          log.warn(`Start attempt ${attempt}/${attempts} failed: ${err.message}`);
+        }
+      }
       state = changed.state;
     }
 
     return this.monitor(page, notify, state);
+  }
+
+  /** Reset ad state and reload the dashboard so the next Start press gets a fresh ad. Returns the current status. */
+  async reopenForRetry(page, notify) {
+    this.lastAdStartClick = 0;
+    this.closeSeen = null;
+    if (this.browser) this.browser.adStage = false;
+    await step('Reload dashboard for retry', async () => {
+      await page.goto(URLS.server, { waitUntil: 'domcontentloaded' });
+      await waitForCloudflare(page, notify);
+      await this.dismissOverlays(page);
+      await page.waitForSelector(`${SEL.startButton}, ${SEL.statusLabel}`, { timeout: config.limits.elementTimeoutMs });
+    });
+    return this.getStatus(page);
   }
 
   async monitor(page, notify, initialState) {
@@ -500,7 +533,7 @@ class AternosController {
     await humanDelay(400, 900);
     await withTimeout(el.click(), FRAME_OP_TIMEOUT_MS, 'click ad Start');
     this.lastAdStartClick = Date.now();
-    if (this.browser && config.browser.liteAllowAdVideo) this.browser.allowMedia = true; // LITE_MODE: optionally let the ad's video load
+    if (this.browser && config.browser.liteFullAdStage) this.browser.adStage = true; // LITE_MODE: let the ad render fully
     log.info('Clicked "Start" in the advertisement popup');
     return 'ad-start';
   }
@@ -619,7 +652,11 @@ class AternosController {
       const ad = await this.clickAdStart(page);
       if (ad) clicked.push(ad);
       const closed = await this.closeAds(page);
-      if (closed) { clicked.push(closed); await this.trimAds(page); }
+      if (closed) {
+        clicked.push(closed);
+        if (this.browser) this.browser.adStage = false; // ad is gone: back to the lean settings
+        await this.trimAds(page);
+      }
     } catch (e) {
       log.debug('handleDialogs:', e.message);
     }

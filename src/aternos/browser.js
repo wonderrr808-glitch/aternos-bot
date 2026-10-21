@@ -128,12 +128,12 @@ async function preparePage(browser) {
         if (req.isInterceptResolutionHandled()) return;
         const type = req.resourceType();
         if (/cloudflare/i.test(req.url())) return void req.continue();
-        // Images/fonts never matter. Video/audio only matters once we are watching the Start ad.
-        if (type === 'image' || type === 'font' || (type === 'media' && !browser.allowMedia)) return void req.abort();
+        // Images/fonts/video are skipped to save RAM - except during the Start ad, which may need them to render its Close button.
+        if ((type === 'image' || type === 'font' || type === 'media') && !browser.adStage) return void req.abort();
         return void req.continue();
       } catch { /* request already handled / page closed */ }
     });
-    log.info('LITE_MODE on: blocking images, fonts and video (video is allowed again once the ad stage starts)');
+    log.info('LITE_MODE on: blocking images, fonts and video outside the ad stage');
   }
   return page;
 }

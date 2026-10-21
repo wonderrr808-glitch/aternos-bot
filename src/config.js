@@ -23,7 +23,7 @@ const config = {
     chromePath: process.env.CHROME_PATH || null,
     liteMode: bool(process.env.LITE_MODE, false),   // block images + fonts (less CPU/RAM on weak hosts)
     lowMemory: bool(process.env.LOW_MEMORY, false), // extra Chromium flags that trim memory use
-    liteAllowAdVideo: bool(process.env.LITE_ALLOW_AD_VIDEO, false), // LITE_MODE normally blocks video even during the ad
+    liteFullAdStage: bool(process.env.LITE_FULL_AD_STAGE, true), // LITE_MODE: load images/fonts/video normally while the Start ad is running
     trimAds: bool(process.env.TRIM_ADS, false), // remove ad iframes before Start / after the ad to free RAM (experimental)
     dumpio: bool(process.env.CHROME_DEBUG, false), // pipe Chromium's own stderr into the logs (crash / GPU messages)
     extraArgs: (process.env.EXTRA_CHROME_ARGS || '').split(/\s+/).filter(Boolean), // extra Chromium flags without redeploying code
@@ -43,6 +43,9 @@ const config = {
     protocolTimeoutMs: num(process.env.PROTOCOL_TIMEOUT_SECONDS, 60) * 1000,
     // If one step makes no progress for this long, abort with a screenshot instead of freezing forever
     stepStallMs: num(process.env.STEP_STALL_SECONDS, 300) * 1000,
+    // The Start ad sometimes fails to render. Each attempt waits this long for the status to change, then we reload and retry.
+    startAttempts: Math.max(1, num(process.env.START_ATTEMPTS, 3)),
+    startAttemptMs: num(process.env.START_ATTEMPT_SECONDS, 75) * 1000,
     startVerifyTimeoutMs: num(process.env.START_VERIFY_TIMEOUT_SECONDS, 120) * 1000, // after clicking Start: wait for status to change (ads!)
     // Ad handling (patience!)
     adMinWatchMs: num(process.env.AD_MIN_WATCH_SECONDS, 10) * 1000,          // never close an ad earlier than this after pressing Start
