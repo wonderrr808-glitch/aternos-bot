@@ -23,6 +23,8 @@ const config = {
     chromePath: process.env.CHROME_PATH || null,
     liteMode: bool(process.env.LITE_MODE, false),   // block images + fonts (less CPU/RAM on weak hosts)
     lowMemory: bool(process.env.LOW_MEMORY, false), // extra Chromium flags that trim memory use
+    dumpio: bool(process.env.CHROME_DEBUG, false), // pipe Chromium's own stderr into the logs (crash / GPU messages)
+    extraArgs: (process.env.EXTRA_CHROME_ARGS || '').split(/\s+/).filter(Boolean), // extra Chromium flags without redeploying code
     userAgent: process.env.USER_AGENT || null,
     profileDir: path.resolve(process.env.PROFILE_DIR || './.browser-profile'),
   },

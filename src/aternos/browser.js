@@ -54,6 +54,7 @@ async function launchBrowser() {
     userDataDir: config.browser.profileDir, // persists cookies => fewer logins/challenges
     defaultViewport: null,
     protocolTimeout: config.limits.protocolTimeoutMs,
+    dumpio: config.browser.dumpio,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -62,12 +63,19 @@ async function launchBrowser() {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-blink-features=AutomationControlled',
-      '--disable-features=Translate,MediaRouter',
+      '--disable-features=Translate,MediaRouter,CalculateNativeWinOcclusion',
+      // Never throttle/freeze our tab just because Chrome thinks it is hidden (typical in headed mode under Xvfb)
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--lang=en-US,en',
       '--window-size=1366,768',
       ...lowMemoryArgs,
+      ...config.browser.extraArgs,
     ],
   });
+
+  browser.on('disconnected', () => log.error('BROWSER DISCONNECTED (Chromium exited or crashed)'));
 
   // Ad scripts love opening extra tabs. Each one costs RAM (and we only ever need the main tab), so close them.
   browser.on('targetcreated', async (target) => {
@@ -86,6 +94,13 @@ async function launchBrowser() {
 async function preparePage(browser) {
   const page = await browser.newPage();
   browser.mainPage = page; // anything else that opens later is an ad popup / popunder
+  // Make ours the ONLY and FOREGROUND tab. Chromium starts with an about:blank tab (and may restore old tabs from the
+  // saved profile); our new tab would otherwise sit in the background, where Chrome can throttle or freeze it.
+  for (const other of await browser.pages()) {
+    if (other !== page) await other.close().catch(() => {});
+  }
+  await page.bringToFront().catch(() => {});
+  page.on('error', (e) => log.error(`PAGE CRASHED: ${e.message}`));
   if (config.browser.userAgent) await page.setUserAgent(config.browser.userAgent);
   await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
   await page.setViewport({ width: 1366, height: 768 });
