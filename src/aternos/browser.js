@@ -36,6 +36,11 @@ async function launchBrowser() {
   clearProfileLocks(config.browser.profileDir);
 
   log.info(`Launching Chromium (${config.browser.headless ? 'headless' : 'headed'}) from ${executablePath}`);
+  // Chromium takes only the LAST --disable-features flag, so build one combined list.
+  const disabledFeatures = ['Translate', 'MediaRouter', 'CalculateNativeWinOcclusion'];
+  // Site isolation gives every cross-origin ad iframe its own renderer process - a huge memory cost on ad-heavy pages.
+  if (config.browser.lowMemory) disabledFeatures.push('IsolateOrigins', 'site-per-process');
+
   const lowMemoryArgs = config.browser.lowMemory
     ? [
         '--disable-extensions',
@@ -44,6 +49,7 @@ async function launchBrowser() {
         '--disable-default-apps',
         '--disable-sync',
         '--mute-audio',
+        '--disable-site-isolation-trials',
         '--renderer-process-limit=2',
         '--js-flags=--max-old-space-size=256',
       ]
@@ -63,7 +69,7 @@ async function launchBrowser() {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-blink-features=AutomationControlled',
-      '--disable-features=Translate,MediaRouter,CalculateNativeWinOcclusion',
+      `--disable-features=${disabledFeatures.join(',')}`,
       // Never throttle/freeze our tab just because Chrome thinks it is hidden (typical in headed mode under Xvfb)
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
@@ -115,11 +121,13 @@ async function preparePage(browser) {
       try {
         if (req.isInterceptResolutionHandled()) return;
         const type = req.resourceType();
-        if ((type === 'image' || type === 'font') && !/cloudflare/i.test(req.url())) return void req.abort();
+        if (/cloudflare/i.test(req.url())) return void req.continue();
+        // Images/fonts never matter. Video/audio only matters once we are watching the Start ad.
+        if (type === 'image' || type === 'font' || (type === 'media' && !browser.allowMedia)) return void req.abort();
         return void req.continue();
       } catch { /* request already handled / page closed */ }
     });
-    log.info('LITE_MODE on: blocking images and fonts');
+    log.info('LITE_MODE on: blocking images, fonts and video (video is allowed again once the ad stage starts)');
   }
   return page;
 }

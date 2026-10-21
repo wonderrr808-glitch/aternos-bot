@@ -148,6 +148,19 @@ class AternosController {
     if (cur.label && Date.now() - cur.since > stallLimit) await this.abortStalled(cur.label, secs, url);
   }
 
+  /** The tab crashed: fail immediately with a useful message instead of waiting out 30s timeouts. */
+  async onPageCrash() {
+    if (this.stallInfo || !this.running) return;
+    log.error(`Tab crashed - aborting run [mem ${memInfo()}]`);
+    this.stallInfo = {
+      message:
+        'The browser tab crashed - almost always out of memory (ad pages are heavy). Set HEADLESS=true, LOW_MEMORY=true and LITE_MODE=true, or give the service more RAM. Then use !start again.',
+      shot: null,
+    };
+    this.cancelled = true;
+    await this.killBrowser();
+  }
+
   async abortStalled(label, secs, url) {
     if (this.stallInfo) return;
     log.error(`STALLED in "${label}" for ${secs}s (url=${url}) - aborting run`);
@@ -177,6 +190,7 @@ class AternosController {
       this.throwIfCancelled(); // !stop arrived while the browser was still launching
       page = await step('Prepare page', () => preparePage(browser));
       this.page = page;
+      page.on('error', () => this.onPageCrash().catch(() => {})); // renderer died (usually out of memory)
       this.startHeartbeat();
 
       await this.openDashboard(page, notify);
@@ -185,7 +199,7 @@ class AternosController {
       if (this.stallInfo) {
         const st = this.stallInfo;
         throw new AternosError(
-          `Stalled in "${st.label}" for ${st.secs}s (page: ${st.url}). The browser was reset - try !start again.`,
+          st.message || `Stalled in "${st.label}" for ${st.secs}s (page: ${st.url}). The browser was reset - try !start again.`,
           { screenshot: st.shot }
         );
       }
@@ -460,6 +474,7 @@ class AternosController {
     await humanDelay(400, 900);
     await withTimeout(el.click(), FRAME_OP_TIMEOUT_MS, 'click ad Start');
     this.lastAdStartClick = Date.now();
+    if (this.browser) this.browser.allowMedia = true; // LITE_MODE: let the ad's video load now
     log.info('Clicked "Start" in the advertisement popup');
     return 'ad-start';
   }

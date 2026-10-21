@@ -54,7 +54,7 @@ async function step(label, fn) {
   currentStep.since = Date.now();
   try {
     const res = await fn();
-    log.info(`✔ ${label} (${Math.round((Date.now() - currentStep.since) / 1000)}s)`);
+    log.info(`✔ ${label} (${Math.round((Date.now() - currentStep.since) / 1000)}s) [mem ${memInfo()}]`);
     return res;
   } catch (err) {
     log.error(`✖ ${label}: ${err.message}`);
