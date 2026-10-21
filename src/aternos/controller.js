@@ -2,7 +2,7 @@ const config = require('../config');
 const log = require('../logger');
 const { launchBrowser, preparePage } = require('./browser');
 const { waitForCloudflare } = require('./cloudflare');
-const { memInfo, sleep, humanDelay, AternosError, step, screenshot, clickByText, clickIfPresent } = require('./helpers');
+const { withTimeout, getCurrentStep, FRAME_OP_TIMEOUT_MS, memInfo, sleep, humanDelay, AternosError, step, screenshot, clickByText, clickIfPresent } = require('./helpers');
 
 const URLS = {
   login: 'https://aternos.org/go/',
@@ -60,6 +60,9 @@ class AternosController {
     this.lastAdStartClick = 0;
     this.closeSeen = null; // { key, since } of the Close button we are currently waiting on
     this.browser = null;
+    this.page = null;
+    this.heartbeat = null;
+    this.stallInfo = null;
     this.cancelled = false;
   }
 
@@ -103,6 +106,56 @@ class AternosController {
     return true;
   }
 
+  /** Close Chromium; if it doesn't close quickly (hung), kill the process. Never throws, never hangs. */
+  async killBrowser() {
+    const browser = this.browser;
+    if (!browser) return;
+    try {
+      await withTimeout(browser.close(), 6000, 'browser.close');
+    } catch (e) {
+      log.warn(`Graceful browser close failed (${e.message}), killing process`);
+      try { browser.process()?.kill('SIGKILL'); } catch { /* already dead */ }
+    }
+  }
+
+  /** Live view of the automation's page (for the !screenshot command). */
+  async snapshot() {
+    if (!this.running || !this.page || this.page.isClosed()) return null;
+    const cur = getCurrentStep();
+    return { png: await screenshot(this.page), step: cur.label || 'monitoring/idle', url: this.page.url() };
+  }
+
+  startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeat = setInterval(() => this.tick().catch((e) => log.warn('heartbeat error:', e.message)), 15_000);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  /** Every 15s: prove the process is alive and, if one step is stuck for too long, abort with a screenshot. */
+  async tick() {
+    if (!this.running || this.cancelled) return;
+    const cur = getCurrentStep();
+    const secs = cur.label ? Math.round((Date.now() - cur.since) / 1000) : 0;
+    const url = this.page && !this.page.isClosed() ? this.page.url() : '-';
+    log.info(`♥ alive | step=${cur.label || 'monitoring/idle'} (${secs}s) | url=${url.slice(0, 90)} | mem ${memInfo()}`);
+
+    const L = config.limits;
+    const stallLimit = Math.max(L.stepStallMs, 2 * Math.max(L.loginTimeoutMs, L.cloudflareTimeoutMs, L.startVerifyTimeoutMs, L.navigationTimeoutMs));
+    if (cur.label && Date.now() - cur.since > stallLimit) await this.abortStalled(cur.label, secs, url);
+  }
+
+  async abortStalled(label, secs, url) {
+    if (this.stallInfo) return;
+    log.error(`STALLED in "${label}" for ${secs}s (url=${url}) - aborting run`);
+    this.stallInfo = { label, secs, url, shot: await screenshot(this.page) };
+    this.cancelled = true; // makes every wait loop exit
+    await this.killBrowser(); // makes every pending browser call reject
+  }
+
   /**
    * Starts the server. `notify(text)` is called with human-readable progress.
    * Resolves with { state: 'online' | 'starting' | 'already-online' | 'timeout' }.
@@ -111,6 +164,7 @@ class AternosController {
     if (this.running) throw new AternosError('A start attempt is already in progress.');
     this.running = true;
     this.cancelled = false;
+    this.stallInfo = null;
     this.lastAdStartClick = 0;
     this.closeSeen = null;
 
@@ -122,10 +176,19 @@ class AternosController {
       this.browser = browser;
       this.throwIfCancelled(); // !stop arrived while the browser was still launching
       page = await step('Prepare page', () => preparePage(browser));
+      this.page = page;
+      this.startHeartbeat();
 
       await this.openDashboard(page, notify);
       return await this.startAndMonitor(page, notify);
     } catch (err) {
+      if (this.stallInfo) {
+        const st = this.stallInfo;
+        throw new AternosError(
+          `Stalled in "${st.label}" for ${st.secs}s (page: ${st.url}). The browser was reset - try !start again.`,
+          { screenshot: st.shot }
+        );
+      }
       if (this.cancelled || err.cancelled) {
         const stopped = new AternosError('Stopped by user.');
         stopped.cancelled = true;
@@ -138,10 +201,10 @@ class AternosController {
       }
       throw new AternosError(err.message, { screenshot: shot, cause: err });
     } finally {
-      if (browser) {
-        try { await browser.close(); } catch (e) { log.warn('Browser close failed:', e.message); }
-      }
+      this.stopHeartbeat();
+      await this.killBrowser(); // bounded: a hung Chromium can no longer keep the bot stuck in "already running"
       this.browser = null;
+      this.page = null;
       this.running = false;
     }
   }
@@ -351,14 +414,18 @@ class AternosController {
       }
     }
     // Cookie/privacy (CMP) popup: match by button text, in the page AND in any iframe
-    for (const frame of page.frames()) {
+    for (const frame of page.frames().slice(0, 10)) {
+      if (frame.detached) continue;
       try {
         const label = await clickByText(frame, CONSENT_TEXTS, 'body');
         if (label) {
           log.info(`Accepted consent popup via "${label}"`);
           await sleep(1000);
         }
-      } catch { /* frame detached or not ready */ }
+      } catch (e) {
+        // Previously swallowed silently -> looked like a freeze. Now bounded (6s) and logged.
+        if (/timed out/i.test(e.message)) log.warn(`Skipped unresponsive frame ${frame.url().slice(0, 70)}: ${e.message}`);
+      }
     }
     await clickByText(page, DISMISS_TEXTS, SEL.dialogScope).catch(() => {});
   }
@@ -371,7 +438,7 @@ class AternosController {
    */
   async clickAdStart(page) {
     if (Date.now() - this.lastAdStartClick < 30_000) return null;
-    const handle = await page.evaluateHandle(() => {
+    const handle = await withTimeout(page.evaluateHandle(() => {
       const visible = (el) => {
         const r = el.getBoundingClientRect();
         const st = getComputedStyle(el);
@@ -387,11 +454,11 @@ class AternosController {
           (el) => el.id !== 'start' && !el.closest('#start') && visible(el) && /^\s*start\s*$/i.test(el.textContent || '')
         ) || null
       );
-    });
+    }), FRAME_OP_TIMEOUT_MS, 'look for ad Start button');
     const el = handle.asElement();
     if (!el) { await handle.dispose(); return null; }
     await humanDelay(400, 900);
-    await el.click();
+    await withTimeout(el.click(), FRAME_OP_TIMEOUT_MS, 'click ad Start');
     this.lastAdStartClick = Date.now();
     log.info('Clicked "Start" in the advertisement popup');
     return 'ad-start';
@@ -406,14 +473,16 @@ class AternosController {
    *  - the button must stay visible at the same spot for `adCloseSettleMs` before it is clicked
    *  - never clicks links that navigate away, and never touches Aternos' own ad popup
    */
-async closeAds(page) {
+  async closeAds(page) {
     try {
       if (!this.lastAdStartClick) return null;
       const sinceAd = Date.now() - this.lastAdStartClick;
       if (sinceAd < config.limits.adMinWatchMs) return null;
 
-      // REMOVED: Do not return null on "watch this short advertisement" text.
-      // We must actively search for close elements while this text is visible.
+      const aternosPopup = await page
+        .evaluate(() => /watch this short advertisement/i.test(document.body?.innerText || ''))
+        .catch(() => false);
+      if (aternosPopup) return null;
 
       const mainFrame = page.mainFrame();
       const frames = sinceAd >= config.limits.adIframeFallbackMs ? page.frames() : [mainFrame];
@@ -421,12 +490,13 @@ async closeAds(page) {
       for (const frame of frames) {
         let handle;
         try {
-          handle = await frame.evaluateHandle((selectors, words) => {
+          handle = await withTimeout(frame.evaluateHandle((selectors, words) => {
             const visible = (el) => {
               const r = el.getBoundingClientRect();
               const st = getComputedStyle(el);
               return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
             };
+            // effective opacity (a button that is still fading in / dimmed during a countdown is "not ready")
             const ready = (el) => {
               if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
               let op = 1;
@@ -435,7 +505,7 @@ async closeAds(page) {
                 op *= parseFloat(st.opacity || '1');
                 if (n === el && st.pointerEvents === 'none') return false;
               }
-              return op >= 0.8; // Lowered slightly from 0.9 to catch fading ad close buttons
+              return op >= 0.9;
             };
             const safe = (el) => {
               if (el.tagName !== 'A') return true;
@@ -443,60 +513,54 @@ async closeAds(page) {
               return !h || h.startsWith('#') || /^javascript:/i.test(h);
             };
             const ok = (el) => visible(el) && ready(el) && safe(el);
-
             for (const sel of selectors) {
               const el = document.querySelector(sel);
               if (el && ok(el)) return el;
             }
             for (const el of document.querySelectorAll('button, a, div, span, [role="button"]')) {
-              if (el.children.length > 1) continue;
+              if (el.children.length > 1) continue; // skip containers
               const t = (el.textContent || '').trim().toLowerCase();
               if (words.includes(t) && ok(el)) return el;
             }
             return null;
-          }, AD_CLOSE_SELECTORS, AD_CLOSE_TEXTS);
-        } catch {
-          continue; // Detached frame or cross-origin access restriction
+          }, AD_CLOSE_SELECTORS, AD_CLOSE_TEXTS), FRAME_OP_TIMEOUT_MS, 'scan frame for Close');
+        } catch (e) {
+          if (/timed out/i.test(e.message)) log.warn(`Skipped unresponsive ad frame ${frame.url().slice(0, 70)}`);
+          continue; // frame detached / not ready / hung
         }
 
         const el = handle.asElement();
-        if (!el) { 
-          await handle.dispose(); 
-          continue; 
-        }
+        if (!el) { await handle.dispose(); continue; }
 
         const info = await el.evaluate((e) => {
           const r = e.getBoundingClientRect();
           const label = (e.textContent || e.getAttribute('aria-label') || 'close').trim().slice(0, 30);
           return { label, pos: `${Math.round(r.x / 4)}x${Math.round(r.y / 4)}` };
         });
-
         const where = frame === mainFrame ? 'page' : 'iframe';
         const key = `${where}|${info.label}|${info.pos}`;
         const now = Date.now();
 
-        // Lock button sighting without letting transient misses wipe out the patience counter
+        // First sighting (or it moved / changed): start the patience timer, don't click yet.
         if (!this.closeSeen || this.closeSeen.key !== key) {
           this.closeSeen = { key, since: now };
-          log.info(`"${info.label}" button detected (${where}), waiting settle period...`);
+          log.info(`"${info.label}" button appeared (${where}), waiting ${config.limits.adCloseSettleMs}ms to be sure it's ready`);
           return null;
         }
-
         if (now - this.closeSeen.since < config.limits.adCloseSettleMs) return null;
 
-        await humanDelay(200, 500);
+        await humanDelay(300, 800);
         try {
-          await el.click();
+          await withTimeout(el.click(), FRAME_OP_TIMEOUT_MS, 'click Close');
         } catch {
-          await el.evaluate((e) => e.click()); // DOM fallback click if coordinate click is blocked
+          await withTimeout(el.evaluate((e) => e.click()), FRAME_OP_TIMEOUT_MS, 'click Close (js)'); // fallback
         }
-
         log.info(`Closed ad overlay via "${info.label}" (${where}) after ${Math.round(sinceAd / 1000)}s`);
         this.closeSeen = null;
         return `ad-close:${info.label}`;
       }
 
-      // Do NOT reset this.closeSeen = null immediately here; allow polling ticks to maintain tracking state.
+      this.closeSeen = null; // nothing ready right now -> reset patience timer
     } catch (e) {
       log.debug('closeAds:', e.message);
     }
@@ -507,16 +571,13 @@ async closeAds(page) {
   async handleDialogs(page) {
     const clicked = [];
     try {
-      const d = await clickByText(page, DISMISS_TEXTS, SEL.dialogScope).catch(() => null);
+      const d = await clickByText(page, DISMISS_TEXTS, SEL.dialogScope);
       if (d) clicked.push(d);
-      
-      const a = await clickByText(page, ACCEPT_TEXTS, SEL.dialogScope).catch(() => null);
+      const a = await clickByText(page, ACCEPT_TEXTS, SEL.dialogScope);
       if (a) clicked.push(a);
-      
-      const ad = await this.clickAdStart(page).catch(() => null);
+      const ad = await this.clickAdStart(page);
       if (ad) clicked.push(ad);
-      
-      const closed = await this.closeAds(page).catch(() => null);
+      const closed = await this.closeAds(page);
       if (closed) clicked.push(closed);
     } catch (e) {
       log.debug('handleDialogs:', e.message);
@@ -524,4 +585,5 @@ async closeAds(page) {
     return clicked;
   }
 }
+
 module.exports = { AternosController };

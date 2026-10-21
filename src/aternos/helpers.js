@@ -21,6 +21,23 @@ function memInfo() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const humanDelay = (min = 300, max = 900) => sleep(min + Math.random() * (max - min));
 
+/** Rejects if `promise` doesn't settle in `ms`. The original promise is kept from causing unhandled rejections. */
+function withTimeout(promise, ms, label = 'operation') {
+  let timer;
+  const p = Promise.resolve(promise);
+  p.catch(() => {}); // late failure after we gave up must not crash/spam
+  return Promise.race([
+    p,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+const FRAME_OP_TIMEOUT_MS = 6000;
+
+// What the automation is doing right now (used by the heartbeat / stall watchdog).
+const currentStep = { label: null, since: 0 };
+const getCurrentStep = () => ({ ...currentStep });
+
 class AternosError extends Error {
   constructor(message, { screenshot = null, cause = null } = {}) {
     super(message);
@@ -33,20 +50,24 @@ class AternosError extends Error {
 /** Wrap one automation step: log it, and re-throw with context on failure. */
 async function step(label, fn) {
   log.info(`▶ ${label} [mem ${memInfo()}]`);
+  currentStep.label = label;
+  currentStep.since = Date.now();
   try {
     const res = await fn();
-    log.info(`✔ ${label}`);
+    log.info(`✔ ${label} (${Math.round((Date.now() - currentStep.since) / 1000)}s)`);
     return res;
   } catch (err) {
     log.error(`✖ ${label}: ${err.message}`);
     if (err instanceof AternosError) throw err;
     throw new AternosError(`${label} failed: ${err.message}`, { cause: err });
+  } finally {
+    currentStep.label = null;
   }
 }
 
 async function screenshot(page) {
   try {
-    if (page && !page.isClosed()) return await page.screenshot({ type: 'png', fullPage: false });
+    if (page && !page.isClosed()) return await withTimeout(page.screenshot({ type: 'png', fullPage: false }), 10_000, 'screenshot');
   } catch (e) {
     log.warn('Could not take screenshot:', e.message);
   }
@@ -56,7 +77,7 @@ async function screenshot(page) {
 /** Click the first visible button whose text exactly matches one of `texts` (inside `scope`). */
 async function clickByText(page, texts, scope = 'body') {
   const wanted = texts.map((t) => t.toLowerCase());
-  const handle = await page.evaluateHandle((wanted, scope) => {
+  const handle = await withTimeout(page.evaluateHandle((wanted, scope) => {
     const visible = (el) => {
       const r = el.getBoundingClientRect();
       const s = getComputedStyle(el);
@@ -69,11 +90,11 @@ async function clickByText(page, texts, scope = 'body') {
       }
     }
     return null;
-  }, wanted, scope);
+  }, wanted, scope), FRAME_OP_TIMEOUT_MS, 'scan for buttons');
   const el = handle.asElement();
   if (!el) { await handle.dispose(); return null; }
-  const label = await el.evaluate((e) => e.textContent.trim());
-  await el.click();
+  const label = await withTimeout(el.evaluate((e) => e.textContent.trim()), FRAME_OP_TIMEOUT_MS, 'read button text');
+  await withTimeout(el.click(), FRAME_OP_TIMEOUT_MS, 'click button');
   return label;
 }
 
@@ -91,4 +112,4 @@ async function clickIfPresent(page, selector) {
   }
 }
 
-module.exports = { memInfo, sleep, humanDelay, AternosError, step, screenshot, clickByText, clickIfPresent };
+module.exports = { withTimeout, getCurrentStep, FRAME_OP_TIMEOUT_MS, memInfo, sleep, humanDelay, AternosError, step, screenshot, clickByText, clickIfPresent };

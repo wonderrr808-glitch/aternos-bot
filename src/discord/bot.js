@@ -3,7 +3,7 @@ const config = require('../config');
 const log = require('../logger');
 const { AternosController } = require('../aternos/controller');
 
-const COMMANDS = { START: '!start', STOP: '!stop' };
+const COMMANDS = { START: '!start', STOP: '!stop', SCREENSHOT: '!screenshot' };
 
 /** Edits one Discord message with a rolling progress log (serialised to respect rate limits). */
 function makeNotifier(statusMessage) {
@@ -75,6 +75,16 @@ function startBot() {
     );
   }
 
+  /** !screenshot -> what is the automation's browser showing right now? (debug a "frozen" run) */
+  async function handleScreenshot(message) {
+    const snap = await controller.snapshot();
+    if (!snap) return void (await message.reply('ℹ️ Nothing is running, so there is no page to show.'));
+    const payload = { content: `📸 Step: **${snap.step}**\n${snap.url.slice(0, 200)}` };
+    if (snap.png) payload.files = [new AttachmentBuilder(snap.png, { name: 'now.png' })];
+    else payload.content += '\n(Screenshot failed - the page may be frozen.)';
+    await message.reply(payload);
+  }
+
   client.once(Events.ClientReady, async (c) => {
     log.info(`Discord ready as ${c.user.tag}`);
     const { announceRestart, allowedChannelId } = config.discord;
@@ -93,7 +103,7 @@ function startBot() {
     try {
       if (message.author.bot || !message.guild) return;
       const cmd = message.content.trim().toLowerCase();
-      if (cmd !== COMMANDS.START && cmd !== COMMANDS.STOP) return;
+      if (!Object.values(COMMANDS).includes(cmd)) return;
 
       const { allowedChannelId, allowedRoleId } = config.discord;
       if (allowedChannelId && message.channel.id !== allowedChannelId) return;
@@ -102,7 +112,8 @@ function startBot() {
       }
 
       if (cmd === COMMANDS.START) await handleStart(message);
-      else await handleStop(message);
+      else if (cmd === COMMANDS.STOP) await handleStop(message);
+      else await handleScreenshot(message);
     } catch (e) {
       log.error('messageCreate handler error:', e);
     }

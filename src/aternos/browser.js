@@ -53,6 +53,7 @@ async function launchBrowser() {
     headless: config.browser.headless, // puppeteer-core >=22: true == new headless
     userDataDir: config.browser.profileDir, // persists cookies => fewer logins/challenges
     defaultViewport: null,
+    protocolTimeout: config.limits.protocolTimeoutMs,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',

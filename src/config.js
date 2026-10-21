@@ -35,6 +35,10 @@ const config = {
     navigationTimeoutMs: num(process.env.NAVIGATION_TIMEOUT_SECONDS, 60) * 1000, // page loads
     // Finish (and close the browser) as soon as Aternos reports "Starting" instead of waiting for "Online" - frees RAM.
     earlyFinish: bool(process.env.EARLY_FINISH, false),
+    // Any single browser command that takes longer than this fails instead of hanging silently (default Puppeteer: 180s)
+    protocolTimeoutMs: num(process.env.PROTOCOL_TIMEOUT_SECONDS, 60) * 1000,
+    // If one step makes no progress for this long, abort with a screenshot instead of freezing forever
+    stepStallMs: num(process.env.STEP_STALL_SECONDS, 300) * 1000,
     startVerifyTimeoutMs: num(process.env.START_VERIFY_TIMEOUT_SECONDS, 120) * 1000, // after clicking Start: wait for status to change (ads!)
     // Ad handling (patience!)
     adMinWatchMs: num(process.env.AD_MIN_WATCH_SECONDS, 10) * 1000,          // never close an ad earlier than this after pressing Start
