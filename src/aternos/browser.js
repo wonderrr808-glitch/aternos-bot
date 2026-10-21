@@ -35,7 +35,10 @@ async function launchBrowser() {
   fs.mkdirSync(config.browser.profileDir, { recursive: true });
   clearProfileLocks(config.browser.profileDir);
 
-  log.info(`Launching Chromium (${config.browser.headless ? 'headless' : 'headed'}) from ${executablePath}`);
+  log.info(
+    `Launching Chromium (${config.browser.headless ? 'headless' : 'headed'}) from ${executablePath} ` +
+      `| LITE_MODE=${config.browser.liteMode} LOW_MEMORY=${config.browser.lowMemory} TRIM_ADS=${config.browser.trimAds}`
+  );
   // Chromium takes only the LAST --disable-features flag, so build one combined list.
   const disabledFeatures = ['Translate', 'MediaRouter', 'CalculateNativeWinOcclusion'];
   // Site isolation gives every cross-origin ad iframe its own renderer process - a huge memory cost on ad-heavy pages.
@@ -50,6 +53,9 @@ async function launchBrowser() {
         '--disable-sync',
         '--mute-audio',
         '--disable-site-isolation-trials',
+        '--disk-cache-size=1',
+        '--media-cache-size=1',
+        '--aggressive-cache-discard',
         '--renderer-process-limit=2',
         '--js-flags=--max-old-space-size=256',
       ]

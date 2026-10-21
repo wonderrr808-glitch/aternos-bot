@@ -8,7 +8,10 @@ function memInfo() {
   try { // cgroup v2
     const cur = read('/sys/fs/cgroup/memory.current');
     const max = read('/sys/fs/cgroup/memory.max');
-    return max === 'max' ? `${mb(cur)}MB` : `${mb(cur)}/${mb(max)}MB`;
+    // "total" includes reclaimable file cache; "apps" (anon) is what can really cause an out-of-memory crash
+    let apps = '';
+    try { apps = `, apps ${mb(read('/sys/fs/cgroup/memory.stat').match(/^anon (\d+)/m)[1])}MB`; } catch { /* no stat */ }
+    return (max === 'max' ? `${mb(cur)}MB` : `${mb(cur)}/${mb(max)}MB`) + apps;
   } catch { /* try v1 */ }
   try { // cgroup v1
     const cur = read('/sys/fs/cgroup/memory/memory.usage_in_bytes');

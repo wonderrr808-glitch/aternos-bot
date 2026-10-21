@@ -148,6 +148,31 @@ class AternosController {
     if (cur.label && Date.now() - cur.since > stallLimit) await this.abortStalled(cur.label, secs, url);
   }
 
+  /** Experimental (TRIM_ADS=true): drop ad iframes from the page to release their memory. Cloudflare/Aternos frames are kept. */
+  async trimAds(page) {
+    if (!config.browser.trimAds) return;
+    try {
+      const n = await withTimeout(
+        page.evaluate(() => {
+          let removed = 0;
+          for (const f of document.querySelectorAll('iframe')) {
+            let host = '';
+            try { host = new URL(f.src || 'about:blank', location.href).hostname; } catch { /* odd src */ }
+            if (/cloudflare/i.test(host) || host.endsWith('aternos.org')) continue;
+            f.remove();
+            removed++;
+          }
+          return removed;
+        }),
+        FRAME_OP_TIMEOUT_MS,
+        'trim ads'
+      );
+      if (n) log.info(`Trimmed ${n} ad iframe(s) to save memory [mem ${memInfo()}]`);
+    } catch (e) {
+      log.debug('trimAds:', e.message);
+    }
+  }
+
   /** The tab crashed: fail immediately with a useful message instead of waiting out 30s timeouts. */
   async onPageCrash() {
     if (this.stallInfo || !this.running) return;
@@ -349,6 +374,7 @@ class AternosController {
     if (state === 'offline' || state === 'unknown') {
       await notify('🖱️ Clicking Start...');
       await step('Click Start', async () => {
+        await this.trimAds(page); // free RAM before the heavy ad stage
         await page.waitForSelector(SEL.startButton, { visible: true, timeout: config.limits.elementTimeoutMs });
         await humanDelay(600, 1400);
         await page.hover(SEL.startButton).catch(() => {});
@@ -474,7 +500,7 @@ class AternosController {
     await humanDelay(400, 900);
     await withTimeout(el.click(), FRAME_OP_TIMEOUT_MS, 'click ad Start');
     this.lastAdStartClick = Date.now();
-    if (this.browser) this.browser.allowMedia = true; // LITE_MODE: let the ad's video load now
+    if (this.browser && config.browser.liteAllowAdVideo) this.browser.allowMedia = true; // LITE_MODE: optionally let the ad's video load
     log.info('Clicked "Start" in the advertisement popup');
     return 'ad-start';
   }
@@ -593,7 +619,7 @@ class AternosController {
       const ad = await this.clickAdStart(page);
       if (ad) clicked.push(ad);
       const closed = await this.closeAds(page);
-      if (closed) clicked.push(closed);
+      if (closed) { clicked.push(closed); await this.trimAds(page); }
     } catch (e) {
       log.debug('handleDialogs:', e.message);
     }

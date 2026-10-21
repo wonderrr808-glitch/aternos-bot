@@ -23,6 +23,8 @@ const config = {
     chromePath: process.env.CHROME_PATH || null,
     liteMode: bool(process.env.LITE_MODE, false),   // block images + fonts (less CPU/RAM on weak hosts)
     lowMemory: bool(process.env.LOW_MEMORY, false), // extra Chromium flags that trim memory use
+    liteAllowAdVideo: bool(process.env.LITE_ALLOW_AD_VIDEO, false), // LITE_MODE normally blocks video even during the ad
+    trimAds: bool(process.env.TRIM_ADS, false), // remove ad iframes before Start / after the ad to free RAM (experimental)
     dumpio: bool(process.env.CHROME_DEBUG, false), // pipe Chromium's own stderr into the logs (crash / GPU messages)
     extraArgs: (process.env.EXTRA_CHROME_ARGS || '').split(/\s+/).filter(Boolean), // extra Chromium flags without redeploying code
     userAgent: process.env.USER_AGENT || null,
